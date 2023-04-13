@@ -331,6 +331,15 @@ if args.log_neuron_diff:
 else:
     pdataset_neuron_diff = None
 
+dataset_token_eval_fn = lambda: get_processed_dataset(
+    batch_size=args.batch_size,
+    max_total_length=args.cutoff,
+    mask_percent=args.mask_percent,
+    device=DEVICE,
+    num_workers=args.num_workers,
+    seed=43,
+)
+
 base_trainer_params = dict(
     model=model,
     optimizer=optimizer,
@@ -358,6 +367,7 @@ base_trainer_params = dict(
     },
     noise_interpolation_delay=args.noise_interpolation_delay,
     lr_warmup_steps=args.lr_warmup_steps,
+    dataset_token_eval_fn=dataset_token_eval_fn,
 )
 
 if args.trainer_type == "retrain":

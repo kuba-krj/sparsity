@@ -107,6 +107,7 @@ class Trainer:
     neuron_diff_n_batches: int = 10
     lr_warmup_steps: int = 10_000
     noise_interpolation_delay: int = 0
+    dataset_token_eval_fn: wikibookdata.ProcessedDataset = None
 
     def __attrs_post_init__(self):
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.mixed_precision)
@@ -202,7 +203,7 @@ class Trainer:
             reduction="none",
         )
         self.mask_loss *= y_mask_set.reshape(-1)  # only check masked words
-        self.token_losses = self.mask_loss[y_mask_set.reshape(-1).bool()]
+        self.token_losses = self.mask_loss.reshape_as(y_mask_set).sum(dim=1)
         mask_loss = self.mask_loss.mean() / self.mask_percent
         return mask_loss
 
@@ -215,7 +216,9 @@ class Trainer:
         y_mask_set = processed_batch.mask_mask
 
         # save model weights before update
-        torch.save(self.model, os.path.join(self.modelpath, "model_state_before"))
+        torch.save(
+            self.model.state_dict(), os.path.join(self.modelpath, "model_state_before")
+        )
 
         # perform the actual update
         self.model_update(step, x_set, y_token_set, y_mask_set)
@@ -232,22 +235,72 @@ class Trainer:
         )
 
         # perform evaluation of the model
+        token_eval_dataset = self.dataset_token_eval_fn()
+        eval_loss_before = self._eval_step(
+            step=step, sample=100, log_values=False, dataset=token_eval_dataset
+        )
 
-        # reverse model state to previous one and mask tokens where
-        # loss was higher (also optimizer could be considered)
+        # reverse model state to previous one and mask tokens to only easy
+        self.model.load_state_dict(
+            torch.load(os.path.join(self.modelpath, "model_state_before"))
+        )
+        easy_mask = self.token_losses_before > self.token_losses_after
+        easy_x_set = x_set[easy_mask]
+        easy_y_token_set = y_token_set[easy_mask]
+        easy_y_mask_set = y_mask_set[easy_mask]
 
         # perform another step
+        self.model_update(step, easy_x_set, easy_y_token_set, easy_y_mask_set)
 
         # perform evaluation of the model
+        token_eval_dataset = self.dataset_token_eval_fn()
+        eval_loss_only_easy = self._eval_step(
+            step=step, sample=100, log_values=False, dataset=token_eval_dataset
+        )
 
-        # reverse model state to previous one and mask tokens where
-        # loss was lower (also optimizer could be considered)
+        # reverse model state to previous one and mask tokens to only hard
+        self.model.load_state_dict(
+            torch.load(os.path.join(self.modelpath, "model_state_before"))
+        )
+        hard_x_set = x_set[~easy_mask]
+        hard_y_token_set = y_token_set[~easy_mask]
+        hard_y_mask_set = y_mask_set[~easy_mask]
+
+        # perform another step
+        self.model_update(step, hard_x_set, hard_y_token_set, hard_y_mask_set)
 
         # perform evaluation of the model
+        token_eval_dataset = self.dataset_token_eval_fn()
+        eval_loss_only_hard = self._eval_step(
+            step=step, sample=100, log_values=False, dataset=token_eval_dataset
+        )
 
-        # reverse model to the correct state
+        # reverse model to the state before update again
+        self.model.load_state_dict(
+            torch.load(os.path.join(self.modelpath, "model_state_before"))
+        )
 
         # log the corresponding differences
+        self.logger.report_scalar(
+            title="loss_diff",
+            series="hard_minus_easy",
+            value=eval_loss_only_hard - eval_loss_only_easy,
+            iteration=step,
+        )
+
+        self.logger.report_scalar(
+            title="loss_diff",
+            series="hard_minus_before",
+            value=eval_loss_only_hard - eval_loss_before,
+            iteration=step,
+        )
+
+        self.logger.report_scalar(
+            title="loss_diff",
+            series="easy_minus_before",
+            value=eval_loss_only_easy - eval_loss_before,
+            iteration=step,
+        )
 
     def _task_train_step(
         self,
@@ -358,13 +411,17 @@ class Trainer:
         step: int,
         sample: int = 10,
         log_values: bool = True,
+        dataset: wikibookdata.ProcessedDataset = None,
     ):
         self.model.eval()
+
+        if dataset is None:
+            dataset = self.pdataset_eval
 
         with torch.no_grad():
             total_mask_loss = 0.0
             for _ in range(sample):
-                processed_batch = self.pdataset_eval.get_batch()
+                processed_batch = dataset.get_batch()
                 assert isinstance(processed_batch, wikibookdata.ProcessedBatch)
                 mask_loss = self._get_mask_loss(
                     x_set=processed_batch.masked_tokens,
