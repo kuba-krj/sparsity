@@ -206,11 +206,7 @@ class Trainer:
         mask_loss = self.mask_loss.mean() / self.mask_percent
         return mask_loss
 
-    def _task_train_step(
-        self,
-        dataset: wikibookdata.ProcessedDataset,
-        step: int,
-    ):
+    def heavy_task_train_step(self, dataset: wikibookdata.ProcessedDataset, step: int):
         self.model.train()
         processed_batch = dataset.get_batch()
         assert isinstance(processed_batch, wikibookdata.ProcessedBatch)
@@ -218,6 +214,73 @@ class Trainer:
         y_token_set = processed_batch.tokens
         y_mask_set = processed_batch.mask_mask
 
+        # save model weights before update
+        torch.save(self.model, os.path.join(self.modelpath, "model_state_before"))
+
+        # perform the actual update
+        self.model_update(step, x_set, y_token_set, y_mask_set)
+
+        # save statistics (losses after and before update)
+        with torch.no_grad():
+            self._get_mask_loss(x_set, y_token_set, y_mask_set)
+        self.token_losses_after = self.token_losses.clone()
+        assert self.token_losses_before.shape == self.token_losses_after.shape
+        torch.save(processed_batch, os.path.join(self.modelpath, "checked_batch"))
+        torch.save(
+            self.token_losses_before,
+            os.path.join(self.modelpath, "token_losses_before"),
+        )
+
+        # perform evaluation of the model
+
+        # reverse model state to previous one and mask tokens where
+        # loss was higher (also optimizer could be considered)
+
+        # perform another step
+
+        # perform evaluation of the model
+
+        # reverse model state to previous one and mask tokens where
+        # loss was lower (also optimizer could be considered)
+
+        # perform evaluation of the model
+
+        # reverse model to the correct state
+
+        # log the corresponding differences
+
+    def _task_train_step(
+        self,
+        dataset: wikibookdata.ProcessedDataset,
+        step: int,
+    ):
+        if self.n_log_heavy_steps and step > 0 and step % self.n_log_heavy_steps == 0:
+            self.heavy_task_train_step(dataset, step)
+        else:
+            self.model.train()
+            processed_batch = dataset.get_batch()
+            assert isinstance(processed_batch, wikibookdata.ProcessedBatch)
+            x_set = processed_batch.masked_tokens
+            y_token_set = processed_batch.tokens
+            y_mask_set = processed_batch.mask_mask
+
+            self.model_update(step, x_set, y_token_set, y_mask_set)
+
+            if (
+                self.n_log_heavy_steps
+                and step > 0
+                and step > self.n_log_heavy_steps
+                and step % self.n_log_heavy_steps in [10, 100, 500, 1000]
+            ):
+                self.check_token_diff(step)
+
+    def model_update(
+        self,
+        step: int,
+        x_set: torch.Tensor,
+        y_token_set: torch.Tensor,
+        y_mask_set: torch.Tensor,
+    ):
         with torch.autocast(
             device_type="cuda", enabled=self.mixed_precision, dtype=torch.float16
         ):
@@ -226,9 +289,7 @@ class Trainer:
             scaled_losses = self.scale_losses(losses)
             loss = sum(scaled_losses.values())
 
-        if self.n_log_heavy_steps and step > 0 and step % self.n_log_heavy_steps == 0:
-            with torch.no_grad():
-                self._get_mask_loss(x_set, y_token_set, y_mask_set)
+        self.token_losses_before = self.token_losses.clone()
 
         self.optimize(
             optimizer=self.optimizer,
@@ -238,39 +299,21 @@ class Trainer:
             run_after_backprop=True,
         )
 
-        if self.n_log_heavy_steps and step > 0 and step % self.n_log_heavy_steps == 0:
-            self.token_losses_before = self.token_losses.clone()
-            with torch.no_grad():
-                self._get_mask_loss(x_set, y_token_set, y_mask_set)
-            self.token_losses_after = self.token_losses.clone()
-            assert self.token_losses_before.shape == self.token_losses_after.shape
-            torch.save(processed_batch, os.path.join(self.modelpath, "checked_batch"))
-            torch.save(
-                self.token_losses_before,
-                os.path.join(self.modelpath, "token_losses_before"),
-            )
+    def check_token_diff(self, step):
+        historical_batch = torch.load(os.path.join(self.modelpath, "checked_batch"))
+        historical_losses = torch.load(
+            os.path.join(self.modelpath, "token_losses_before")
+        )
 
-        if (
-            self.n_log_heavy_steps
-            and step > 0
-            and step > self.n_log_heavy_steps
-            and step % self.n_log_heavy_steps in [10, 100, 500, 1000]
-        ):
-            del processed_batch
-            historical_batch = torch.load(os.path.join(self.modelpath, "checked_batch"))
-            historical_losses = torch.load(
-                os.path.join(self.modelpath, "token_losses_before")
-            )
+        x_set = historical_batch.masked_tokens
+        y_token_set = historical_batch.tokens
+        y_mask_set = historical_batch.mask_mask
+        with torch.no_grad():
+            self._get_mask_loss(x_set, y_token_set, y_mask_set)
+        self.token_losses_after = self.token_losses.clone()
+        self.token_losses_before = historical_losses
 
-            x_set = historical_batch.masked_tokens
-            y_token_set = historical_batch.tokens
-            y_mask_set = historical_batch.mask_mask
-            with torch.no_grad():
-                self._get_mask_loss(x_set, y_token_set, y_mask_set)
-            self.token_losses_after = self.token_losses.clone()
-            self.token_losses_before = historical_losses
-
-            self.log_token_losses(step)
+        self.log_token_losses(step)
 
     def _model_train_step(self, step: int):
         self.model.train()
