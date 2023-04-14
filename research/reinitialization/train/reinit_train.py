@@ -101,6 +101,7 @@ parser.add_argument("--noise_ff_n_steps", type=int, required=False)
 parser.add_argument("--noise_interpolation_delay", type=float, default=0.0)
 parser.add_argument("--noise_ff_weight_init", type=str, default="random")
 parser.add_argument("--lr_warmup_steps", type=int, default=10_000)
+parser.add_argument("--write_easy_masks", action="store_true")
 
 args = parser.parse_args()
 
@@ -368,6 +369,7 @@ base_trainer_params = dict(
     noise_interpolation_delay=args.noise_interpolation_delay,
     lr_warmup_steps=args.lr_warmup_steps,
     dataset_token_eval_fn=dataset_token_eval_fn,
+    write_easy_masks=args.write_easy_masks,
 )
 
 if args.trainer_type == "retrain":

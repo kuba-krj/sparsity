@@ -108,6 +108,7 @@ class Trainer:
     lr_warmup_steps: int = 10_000
     noise_interpolation_delay: int = 0
     dataset_token_eval_fn: wikibookdata.ProcessedDataset = None
+    write_easy_masks: bool = False
 
     def __attrs_post_init__(self):
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.mixed_precision)
@@ -328,6 +329,8 @@ class Trainer:
         # perform update
         self.model_update(step, x_set, y_token_set, y_mask_set)
 
+        self.token_losses_before = self.token_losses.clone()
+
         # save statistics (losses after and before update)
         with torch.no_grad():
             self._get_mask_loss(x_set, y_token_set, y_mask_set)
@@ -347,7 +350,9 @@ class Trainer:
         dataset: wikibookdata.ProcessedDataset,
         step: int,
     ):
-        if self.n_log_heavy_steps and step > 0 and step % self.n_log_heavy_steps == 0:
+        if self.write_easy_masks:
+            self.task_diff_train_step(dataset, step)
+        elif self.n_log_heavy_steps and step > 0 and step % self.n_log_heavy_steps == 0:
             self.heavy_task_train_step(dataset, step)
         else:
             self.model.train()
