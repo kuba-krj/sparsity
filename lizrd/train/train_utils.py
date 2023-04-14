@@ -215,9 +215,13 @@ class Trainer:
         y_token_set = processed_batch.tokens
         y_mask_set = processed_batch.mask_mask
 
-        # save model weights before update
+        # save model weights and optimizer state before update
         torch.save(
             self.model.state_dict(), os.path.join(self.modelpath, "model_state_before")
+        )
+        torch.save(
+            self.optimizer.state_dict(),
+            os.path.join(self.modelpath, "optimizer_state_before"),
         )
 
         # perform the actual update
@@ -242,9 +246,12 @@ class Trainer:
             step=step, sample=100, log_values=False, dataset=token_eval_dataset
         )
 
-        # reverse model state to previous one and mask tokens to only easy
+        # reverse model and optimizer state to previous one and mask tokens to only easy
         self.model.load_state_dict(
             torch.load(os.path.join(self.modelpath, "model_state_before"))
+        )
+        self.optimizer.load_state_dict(
+            torch.load(os.path.join(self.modelpath, "optimizer_state_before"))
         )
         easy_mask = self.token_losses_before - self.token_losses_after > 1
         easy_x_set = x_set[easy_mask]
@@ -260,9 +267,12 @@ class Trainer:
             step=step, sample=100, log_values=False, dataset=token_eval_dataset
         )
 
-        # reverse model state to previous one and mask tokens to only hard
+        # reverse model and optimizer state to previous one and mask tokens to only hard
         self.model.load_state_dict(
             torch.load(os.path.join(self.modelpath, "model_state_before"))
+        )
+        self.optimizer.load_state_dict(
+            torch.load(os.path.join(self.modelpath, "optimizer_state_before"))
         )
         hard_x_set = x_set[~easy_mask]
         hard_y_token_set = y_token_set[~easy_mask]
@@ -277,9 +287,12 @@ class Trainer:
             step=step, sample=100, log_values=False, dataset=token_eval_dataset
         )
 
-        # reverse model to the state before update again
+        # reverse model and optimizer to the state before update again
         self.model.load_state_dict(
             torch.load(os.path.join(self.modelpath, "model_state_before"))
+        )
+        self.optimizer.load_state_dict(
+            torch.load(os.path.join(self.modelpath, "optimizer_state_before"))
         )
 
         # log the corresponding differences
@@ -303,6 +316,31 @@ class Trainer:
             value=eval_loss_only_easy - eval_loss_before,
             iteration=step,
         )
+
+    def task_diff_train_step(self, dataset: wikibookdata.ProcessedDataset, step: int):
+        self.model.train()
+        processed_batch = dataset.get_batch()
+        assert isinstance(processed_batch, wikibookdata.ProcessedBatch)
+        x_set = processed_batch.masked_tokens
+        y_token_set = processed_batch.tokens
+        y_mask_set = processed_batch.mask_mask
+
+        # perform update
+        self.model_update(step, x_set, y_token_set, y_mask_set)
+
+        # save statistics (losses after and before update)
+        with torch.no_grad():
+            self._get_mask_loss(x_set, y_token_set, y_mask_set)
+        self.token_losses_after = self.token_losses.clone()
+        assert self.token_losses_before.shape == self.token_losses_after.shape
+        torch.save(processed_batch, os.path.join(self.modelpath, "checked_batch"))
+        torch.save(
+            self.token_losses_before,
+            os.path.join(self.modelpath, "token_losses_before"),
+        )
+
+        easy_mask = self.token_losses_before - self.token_losses_after
+        torch.save(easy_mask, os.path.join(self.modelpath, f"easy_mask_step_{step}"))
 
     def _task_train_step(
         self,
@@ -540,12 +578,29 @@ class Trainer:
 
     def log_token_losses(self, step: int):
         print(f"Logging token losses at step {step}...")
+        # log histogram
         values = self.token_losses_after - self.token_losses_before
         values = values.detach().cpu().numpy().tolist()
         fig = px.histogram(values)
         log_plot(
             title="Token losses difference",
             series="Token losses difference",
+            iteration=step,
+            figure=fig,
+        )
+        # log scatter of token losses before/after
+        print("Logging token losses before/after...")
+        fig = px.scatter(
+            x=self.token_losses_before.detach().cpu().numpy().tolist(),
+            y=self.token_losses_after.detach().cpu().numpy().tolist(),
+        )
+        fig.update_layout(
+            xaxis_title="Token losses before",
+            yaxis_title="Token losses after",
+        )
+        log_plot(
+            title="Token losses before/after",
+            series="Token losses before/after",
             iteration=step,
             figure=fig,
         )
