@@ -246,7 +246,7 @@ class Trainer:
         self.model.load_state_dict(
             torch.load(os.path.join(self.modelpath, "model_state_before"))
         )
-        easy_mask = self.token_losses_before > self.token_losses_after
+        easy_mask = self.token_losses_before - self.token_losses_after > 1
         easy_x_set = x_set[easy_mask]
         easy_y_token_set = y_token_set[easy_mask]
         easy_y_mask_set = y_mask_set[easy_mask]
