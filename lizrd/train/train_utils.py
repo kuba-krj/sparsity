@@ -223,6 +223,8 @@ class Trainer:
         # perform the actual update
         self.model_update(step, x_set, y_token_set, y_mask_set)
 
+        self.token_losses_before = self.token_losses.clone()
+
         # save statistics (losses after and before update)
         with torch.no_grad():
             self._get_mask_loss(x_set, y_token_set, y_mask_set)
@@ -342,8 +344,6 @@ class Trainer:
             scaled_losses = self.scale_losses(losses)
             loss = sum(scaled_losses.values())
 
-        self.token_losses_before = self.token_losses.clone()
-
         self.optimize(
             optimizer=self.optimizer,
             scaler=self.scaler,
@@ -365,6 +365,7 @@ class Trainer:
             self._get_mask_loss(x_set, y_token_set, y_mask_set)
         self.token_losses_after = self.token_losses.clone()
         self.token_losses_before = historical_losses
+        assert self.token_losses_before.shape == self.token_losses_after.shape
 
         self.log_token_losses(step)
 
@@ -607,7 +608,7 @@ class Trainer:
                 and step % self.n_log_heavy_steps == 0
             ):
                 print(f"Running heavy log at step {step}")
-                self.pruner.log_heavy(step, self.modelpath)
+                self.pruner.log_heavy(step)
                 self.log_token_losses(step)
             print(f"Step {step}")
 
